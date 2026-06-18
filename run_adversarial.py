@@ -161,6 +161,49 @@ def _workspace_diff() -> tuple[str, str]:
     return files.strip(), diff
 
 
+def _run_tests() -> tuple[bool, str]:
+    """Run python unit tests in the workspace (config.WORKSPACE_DIR).
+    Specifically targets 'tests' or 'scripts' subdirectories if present,
+    otherwise falls back to the workspace root.
+    Returns (success, output)."""
+    workspace = Path(config.WORKSPACE_DIR).resolve()
+    test_dirs = []
+    if (workspace / "tests").is_dir():
+        test_dirs.append("tests")
+    if (workspace / "scripts").is_dir():
+        test_dirs.append("scripts")
+        
+    if not test_dirs:
+        test_dirs = ["."]
+
+    outputs = []
+    all_success = True
+    for t_dir in test_dirs:
+        # Run discovery in the directory relative to workspace root
+        cmd = [sys.executable, "-m", "unittest", "discover", "-s", t_dir]
+        try:
+            p = subprocess.run(
+                cmd,
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            out = f"--- running tests in: {t_dir} ---\n"
+            if p.stdout:
+                out += f"STDOUT:\n{p.stdout}\n"
+            if p.stderr:
+                out += f"STDERR:\n{p.stderr}\n"
+            outputs.append(out)
+            if p.returncode != 0:
+                all_success = False
+        except Exception as e:
+            all_success = False
+            outputs.append(f"Failed to execute tests in {t_dir}: {e}\n")
+
+    return all_success, "\n".join(outputs)
+
+
 # --------------------------------------------------------------------------- #
 # prompt builders
 # --------------------------------------------------------------------------- #
@@ -291,6 +334,23 @@ async def main() -> int:
         _write(REVIEW_FILE, f"# Round {rnd} — Reviewer (Gemini)\n_{_now()}_\n\n{review}\n")
         verdict = _verdict(review)
         print(review[:600])
+
+        if verdict == "approved":
+            print(f"⚙ Running automated unit tests in {config.WORKSPACE_DIR}...")
+            test_success, test_output = _run_tests()
+            if not test_success:
+                print("❌ Tests failed! Overriding approval to CHANGES_REQUESTED.")
+                verdict = "changes"
+                test_feedback = (
+                    f"\n\n❌ AUTOMATED TEST RUNNER: TEST FAILURE OVERRIDE\n"
+                    f"Gemini approved the changes, but automated unit tests failed:\n\n"
+                    f"```\n{test_output}\n```\n"
+                    f"Please resolve these test failures."
+                )
+                review += test_feedback
+                _write(REVIEW_FILE, f"# Round {rnd} — Reviewer (Gemini) [TESTS FAILED]\n_{_now()}_\n\n{review}\n")
+            else:
+                print("✅ All unit tests passed.")
 
         state["history"].append({"round": rnd, "verdict": verdict, "at": _now()})
         last_review = review
