@@ -84,6 +84,16 @@ class App:
                             highlightthickness=1, highlightbackground=BORDER_COLOR, highlightcolor=RED)
         self.task.pack(fill="x", padx=16, pady=(0, 12))
 
+        # Load existing task if present
+        try:
+            task_path = BASE / "shared" / "task.md"
+            if task_path.exists():
+                text = task_path.read_text(encoding="utf-8").strip()
+                if text and not text.startswith("<!--"):
+                    self.task.insert("1.0", text)
+        except Exception:
+            pass
+
         # Control Row (Rounds and buttons)
         ctrl_row = tk.Frame(control_card, bg=CARD_BG)
         ctrl_row.pack(fill="x", padx=16, pady=(0, 14))
@@ -151,8 +161,26 @@ class App:
 
         # Bindings
         self.task.bind("<Control-Return>", lambda e: (self.on_run(), "break")[1])
+        self.task.bind("<KeyPress>", self._on_key_press)
+        self.task.bind("<<Paste>>", self._on_paste)
         self.task.focus_set()
         self.root.after(80, self._drain)
+
+    def _on_key_press(self, event):
+        # Intercept Georgian keyboard layout keysyms (0x14a0 to 0x14f9)
+        # and insert the proper Unicode characters to prevent Windows Tcl/Tk '?' bug
+        if 5280 <= event.keysym_num <= 5369:
+            char = chr(event.keysym_num - 976)
+            event.widget.insert("insert", char)
+            return "break"
+
+    def _on_paste(self, event):
+        try:
+            text = self.root.clipboard_get()
+            event.widget.insert("insert", text)
+        except Exception:
+            pass
+        return "break"
 
     def _resolve_font(self, families, size, weight="normal"):
         avail = set(tkfont.families())
