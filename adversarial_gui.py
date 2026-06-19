@@ -167,12 +167,42 @@ class App:
         self.root.after(80, self._drain)
 
     def _on_key_press(self, event):
-        # Intercept Georgian keyboard layout keysyms (0x14a0 to 0x14f9)
-        # and insert the proper Unicode characters to prevent Windows Tcl/Tk '?' bug
-        if 5280 <= event.keysym_num <= 5369:
-            char = chr(event.keysym_num - 976)
-            event.widget.insert("insert", char)
-            return "break"
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.WinDLL('user32', use_last_error=True)
+                user32.GetKeyboardState.argtypes = [ctypes.POINTER(wintypes.BYTE * 256)]
+                user32.GetKeyboardState.restype = wintypes.BOOL
+                user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+                user32.GetKeyboardLayout.restype = wintypes.HKL
+                user32.ToUnicodeEx.argtypes = [
+                    wintypes.UINT, wintypes.UINT, ctypes.POINTER(wintypes.BYTE * 256),
+                    wintypes.LPWSTR, ctypes.c_int, wintypes.UINT, wintypes.HKL
+                ]
+                user32.ToUnicodeEx.restype = ctypes.c_int
+
+                keyboard_state = (wintypes.BYTE * 256)()
+                user32.GetKeyboardState(ctypes.byref(keyboard_state))
+                
+                vk = event.keycode
+                buf = ctypes.create_unicode_buffer(5)
+                hkl = user32.GetKeyboardLayout(0)
+                
+                res = user32.ToUnicodeEx(vk, 0, ctypes.byref(keyboard_state), buf, 5, 0, hkl)
+                if res > 0:
+                    char = buf.value
+                    if any(ord(c) > 127 for c in char):
+                        event.widget.insert("insert", char)
+                        return "break"
+            except Exception:
+                pass
+        else:
+            # Fallback for non-Windows OS
+            if 5280 <= event.keysym_num <= 5369:
+                char = chr(event.keysym_num - 976)
+                event.widget.insert("insert", char)
+                return "break"
 
     def _on_paste(self, event):
         try:
