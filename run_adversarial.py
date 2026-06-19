@@ -65,6 +65,16 @@ CEILING = 5
 DEFAULT_ROUNDS = max(1, min(int(os.getenv("ADVERSARIAL_ROUNDS", "3")), CEILING))
 DIFF_CHAR_CAP = 12000
 
+# The post-approval unit-test gate is OPT-IN and default OFF. It exists to catch
+# a coder change that passes Gemini's eyes but breaks the suite — but only when
+# WORKSPACE_DIR is a real codebase with a tests/ suite. Left on by default it
+# wedged the loop: WORKSPACE_DIR here is an Obsidian vault with no tests, and
+# Python 3.12+ exits 5 ("NO TESTS RAN") on an empty discover, which the gate read
+# as failure and used to silently flip every APPROVED to CHANGES_REQUESTED —
+# guaranteeing ceiling_reached forever. Turn it on only for a tested workspace.
+ENABLE_TEST_GATE = os.getenv("ENABLE_TEST_GATE", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+
 
 # --------------------------------------------------------------------------- #
 # small file / git helpers
@@ -161,47 +171,78 @@ def _workspace_diff() -> tuple[str, str]:
     return files.strip(), diff
 
 
-def _run_tests() -> tuple[bool, str]:
-    """Run python unit tests in the workspace (config.WORKSPACE_DIR).
-    Specifically targets 'tests' or 'scripts' subdirectories if present,
-    otherwise falls back to the workspace root.
-    Returns (success, output)."""
+def _preexisting_dirt() -> list[str]:
+    """Files already dirty in WORKSPACE_DIR BEFORE the coder runs.
+
+    The reviewer is fed the entire uncommitted diff (Option B), so anything
+    listed here would be reviewed as if the coder wrote it — which is how a
+    trivial task ("are you here?") spun the loop into rewriting unrelated
+    pre-existing files. Metadata dirs are filtered to match _workspace_diff so
+    the check and the review agree on what counts as 'the coder's work'.
+    """
+    code, out = _git(["status", "--porcelain"])
+    if code != 0:
+        return []
+    ignore_prefixes = (".obsidian/", ".claude/", ".gemini/", "shared/")
+    dirty = []
+    for line in out.splitlines():
+        # porcelain format is 'XY <path>'; the path begins at column 3.
+        path = line[3:].strip().strip('"') if len(line) > 3 else ""
+        if not path:
+            continue
+        if any(path.startswith(p) for p in ignore_prefixes):
+            continue
+        dirty.append(path)
+    return dirty
+
+
+def _run_tests() -> tuple[str, str]:
+    """Run python unit tests in WORKSPACE_DIR/tests, ONLY there.
+
+    Returns (status, output) where status is one of:
+      "passed"  - tests ran and all passed
+      "failed"  - tests ran and at least one failed/errored (the real gate signal)
+      "skipped" - no tests/ dir, an empty discover, or the runner itself failed
+
+    Critically, "no tests collected" is "skipped", NOT "failed": Python 3.12+
+    exits 5 ("NO TESTS RAN") on an empty discover, and an absent/empty suite must
+    never flip an APPROVED verdict. Only a genuine test failure overrides approval.
+    The old 'scripts/' and '.' fallbacks are gone — they imported arbitrary
+    non-test modules from the workspace and were the source of the false failures.
+    """
     workspace = Path(config.WORKSPACE_DIR).resolve()
-    test_dirs = []
-    if (workspace / "tests").is_dir():
-        test_dirs.append("tests")
-    if (workspace / "scripts").is_dir():
-        test_dirs.append("scripts")
-        
-    if not test_dirs:
-        test_dirs = ["."]
+    tests_dir = workspace / "tests"
+    if not tests_dir.is_dir():
+        return "skipped", f"(no tests/ directory in {workspace} — test gate skipped)"
 
-    outputs = []
-    all_success = True
-    for t_dir in test_dirs:
-        # Run discovery in the directory relative to workspace root
-        cmd = [sys.executable, "-m", "unittest", "discover", "-s", t_dir]
-        try:
-            p = subprocess.run(
-                cmd,
-                cwd=str(workspace),
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            out = f"--- running tests in: {t_dir} ---\n"
-            if p.stdout:
-                out += f"STDOUT:\n{p.stdout}\n"
-            if p.stderr:
-                out += f"STDERR:\n{p.stderr}\n"
-            outputs.append(out)
-            if p.returncode != 0:
-                all_success = False
-        except Exception as e:
-            all_success = False
-            outputs.append(f"Failed to execute tests in {t_dir}: {e}\n")
+    cmd = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as e:
+        # The runner itself failing is infrastructure noise, not a code failure —
+        # skip rather than block approval on it.
+        return "skipped", f"(could not run test discovery: {e})"
 
-    return all_success, "\n".join(outputs)
+    output = "--- running tests in: tests ---\n"
+    if p.stdout:
+        output += f"STDOUT:\n{p.stdout}\n"
+    if p.stderr:
+        output += f"STDERR:\n{p.stderr}\n"
+
+    combined = f"{p.stdout}\n{p.stderr}"
+    # Python 3.12+ exits 5 with "NO TESTS RAN" on an empty discover; older Pythons
+    # exit 0 but print "Ran 0 tests". Either way: skip, never override approval.
+    if p.returncode == 5 or "NO TESTS RAN" in combined or "Ran 0 tests" in combined:
+        return "skipped", output
+    if p.returncode == 0:
+        return "passed", output
+    return "failed", output
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +315,9 @@ async def main() -> int:
     ap.add_argument("task", nargs="?", help="task text; if omitted, read shared/task.md")
     ap.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS,
                     help=f"max rounds (clamped to 1..{CEILING})")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="proceed even if WORKSPACE_DIR has pre-existing uncommitted "
+                         "changes (they WILL be reviewed as if the coder wrote them)")
     args = ap.parse_args()
 
     SHARED.mkdir(exist_ok=True)
@@ -285,6 +329,20 @@ async def main() -> int:
     task = _read(TASK_FILE).strip()
     if not task or task.startswith("<!--"):
         print("⛔ No task. Write the spec in shared/task.md, or pass it as an argument.")
+        return 1
+
+    # Clean-tree pre-flight (fail BEFORE spending on Gemini init). The reviewer
+    # sees the whole uncommitted diff, so a dirty workspace makes it review files
+    # the coder never touched. Refuse on a dirty tree unless the operator opts in.
+    dirt = _preexisting_dirt()
+    if dirt and not args.allow_dirty:
+        preview = "\n".join(f"    {f}" for f in dirt[:15])
+        more = f"\n    ...(+{len(dirt) - 15} more)" if len(dirt) > 15 else ""
+        print(
+            f"⛔ WORKSPACE_DIR has {len(dirt)} uncommitted file(s) the reviewer would "
+            f"treat as the coder's work:\n{preview}{more}\n"
+            f"   Commit or stash them first, or re-run with --allow-dirty to review "
+            f"them on purpose.\n   WORKSPACE_DIR = {config.WORKSPACE_DIR}")
         return 1
 
     agent_orchestrator.init_clients()
@@ -335,10 +393,10 @@ async def main() -> int:
         verdict = _verdict(review)
         print(review[:600])
 
-        if verdict == "approved":
-            print(f"⚙ Running automated unit tests in {config.WORKSPACE_DIR}...")
-            test_success, test_output = _run_tests()
-            if not test_success:
+        if verdict == "approved" and ENABLE_TEST_GATE:
+            print(f"⚙ Test gate ON — running unit tests in {config.WORKSPACE_DIR}\\tests...")
+            test_status, test_output = _run_tests()
+            if test_status == "failed":
                 print("❌ Tests failed! Overriding approval to CHANGES_REQUESTED.")
                 verdict = "changes"
                 test_feedback = (
@@ -349,6 +407,10 @@ async def main() -> int:
                 )
                 review += test_feedback
                 _write(REVIEW_FILE, f"# Round {rnd} — Reviewer (Gemini) [TESTS FAILED]\n_{_now()}_\n\n{review}\n")
+            elif test_status == "skipped":
+                # No suite / empty discover must NEVER block approval — it only
+                # used to because of Python 3.12+'s exit-5 on an empty discover.
+                print("⚪ No tests collected — approval stands (test gate skipped).")
             else:
                 print("✅ All unit tests passed.")
 
