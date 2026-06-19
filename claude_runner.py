@@ -79,6 +79,18 @@ def _build_argv(exe: str) -> list[str]:
         args += ["--max-budget-usd", str(config.MAX_TASK_COST_USD)]
     if config.CLAUDE_PERMISSION_MODE == "bypassPermissions":
         args.append("--dangerously-skip-permissions")
+    else:
+        # acceptEdits auto-accepts file edits but, in headless -p mode, anything
+        # else that needs approval is auto-DENIED — which is why the coder could
+        # not run its own smoke tests. Grant LEAST-privilege execution: only
+        # test-runner commands, never arbitrary Bash (that's what bypass is for).
+        # Edit/Write/MultiEdit are listed explicitly so this allow-list can never
+        # accidentally override acceptEdits' edit rights.
+        args += [
+            "--allowed-tools",
+            "Edit", "Write", "MultiEdit",
+            "Bash(python:*)", "Bash(python3:*)", "Bash(py:*)", "Bash(pytest:*)",
+        ]
     full = ["cmd", "/c", exe, *args] if os.name == "nt" else [exe, *args]
     return full
 
