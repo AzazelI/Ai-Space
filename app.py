@@ -272,8 +272,11 @@ class App:
     def _build_worker(self, task, rounds):
         """Run the hardened adversarial build loop as a subprocess, streaming output."""
         try:
+            # -u forces the child's stdout unbuffered; without it Python block-buffers
+            # a piped (non-TTY) stdout, so the loop's progress prints never reach the
+            # GUI until a round finishes — making a long coder run look frozen.
             proc = subprocess.Popen(
-                [sys.executable, str(BUILD_SCRIPT), task, "--rounds", str(rounds)],
+                [sys.executable, "-u", str(BUILD_SCRIPT), task, "--rounds", str(rounds)],
                 cwd=str(BASE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1)
             for line in proc.stdout:
