@@ -22,6 +22,12 @@ if not GEMINI_API_KEYS and GEMINI_API_KEY:
 # --- Build workspace: where the loop edits the project under construction ---
 # Defaults to ./workspace inside this repo so a fresh clone builds in isolation.
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "").strip() or str((Path(__file__).parent / "workspace").resolve())
+# Ensure it exists so a subprocess cwd=WORKSPACE_DIR never fails on a fresh clone
+# (Discuss runs the claude CLI with cwd here even before any project is built).
+try:
+    Path(WORKSPACE_DIR).mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 # --- Claude worker (local `claude` CLI on your Pro login — no API key/credits) ---
 CLAUDE_CLI_PATH = os.getenv("CLAUDE_CLI_PATH", "claude").strip()

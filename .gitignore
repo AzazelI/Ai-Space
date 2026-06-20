@@ -12,3 +12,15 @@ __pycache__/
 .budget_ledger.json
 
 .bot.pid
+
+# Council Room runtime state (recreated on each run)
+shared/transcript.md
+shared/plan.md
+shared/review.md
+shared/work.md
+shared/state.json
+shared/task.md
+
+# Build target (the project under construction)
+workspace/*
+!workspace/.gitkeep
