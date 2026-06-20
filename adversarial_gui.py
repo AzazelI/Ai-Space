@@ -159,12 +159,46 @@ class App:
         self.close_btn.bind("<Enter>", lambda e: self.close_btn.config(bg=BORDER_COLOR))
         self.close_btn.bind("<Leave>", lambda e: self.close_btn.config(bg=CARD_BG))
 
+        # Log export — the console is read-only (state="disabled"), so tkinter
+        # blocks select/copy. Give explicit Save (to file) + Copy (to clipboard).
+        self.save_log_btn = tk.Button(footer, text="💾 Save Log", bg=CARD_BG, fg=TEXT_COLOR, relief="flat", bd=0,
+                                      font=self.ui_font, activebackground=BORDER_COLOR, activeforeground=TEXT_COLOR,
+                                      padx=16, pady=6, cursor="hand2", command=self._save_log)
+        self.save_log_btn.pack(side="left")
+        self.copy_log_btn = tk.Button(footer, text="📋 Copy Log", bg=CARD_BG, fg=TEXT_COLOR, relief="flat", bd=0,
+                                      font=self.ui_font, activebackground=BORDER_COLOR, activeforeground=TEXT_COLOR,
+                                      padx=16, pady=6, cursor="hand2", command=self._copy_log)
+        self.copy_log_btn.pack(side="left", padx=(8, 0))
+
         # Bindings
         self.task.bind("<Control-Return>", lambda e: (self.on_run(), "break")[1])
         self.task.bind("<KeyPress>", self._on_key_press)
         self.task.bind("<<Paste>>", self._on_paste)
         self.task.focus_set()
         self.root.after(80, self._drain)
+
+    def _log_text(self) -> str:
+        """Full console text. `get` works even while the widget is disabled."""
+        return self.log.get("1.0", "end-1c")
+
+    def _save_log(self):
+        """Dump the console log to shared/last_run.log (UTF-8) for easy sharing."""
+        path = BASE / "shared" / "last_run.log"
+        try:
+            path.write_text(self._log_text(), encoding="utf-8")
+            self._append(f"\n💾 ლოგი შენახულია / saved: {path}\n", "ok")
+        except Exception as e:
+            self._append(f"\n⚠️ შენახვა ვერ მოხერხდა / save failed: {e}\n", "err")
+
+    def _copy_log(self):
+        """Copy the console log to the system clipboard."""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self._log_text())
+            self.root.update()  # keep clipboard populated after the call returns
+            self._append("\n📋 ლოგი დაკოპირდა clipboard-ში / copied to clipboard.\n", "ok")
+        except Exception as e:
+            self._append(f"\n⚠️ კოპირება ვერ მოხერხდა / copy failed: {e}\n", "err")
 
     def _on_key_press(self, event):
         if sys.platform == "win32":
