@@ -57,27 +57,42 @@ def today_tokens() -> int:
     return d["input_tokens"] + d["output_tokens"] + d["cache_tokens"]
 
 
+# Cache tokens (overwhelmingly cache READS from Claude CLI runs) are ~10x cheaper
+# than fresh input, so counting them 1:1 against the daily ceiling drains it ~10x
+# too fast — a few build runs exhaust the day. Weight them down for the CEILING
+# ONLY; the ledger still records the raw count (today_tokens / summary) for honest
+# accounting. 0.1 ≈ the cache-read price ratio.
+CACHE_TOKEN_WEIGHT = 0.1
+
+
+def billable_tokens() -> int:
+    """Effective tokens counted toward the daily ceiling: input + output at full
+    weight, cache discounted by CACHE_TOKEN_WEIGHT (cache reads are cheap)."""
+    d = _load()
+    return d["input_tokens"] + d["output_tokens"] + int(d["cache_tokens"] * CACHE_TOKEN_WEIGHT)
+
+
 def budget_exceeded() -> bool:
-    """True if today's token total has already reached DAILY_TOKEN_BUDGET.
+    """True if today's BILLABLE token total has reached DAILY_TOKEN_BUDGET.
     Always False when the budget is unlimited (0)."""
     if config.DAILY_TOKEN_BUDGET <= 0:
         return False
-    return today_tokens() >= config.DAILY_TOKEN_BUDGET
+    return billable_tokens() >= config.DAILY_TOKEN_BUDGET
 
 
 def budget_alert_reached() -> bool:
-    """True if today's token total has reached 80% of DAILY_TOKEN_BUDGET.
+    """True if today's billable token total has reached 80% of DAILY_TOKEN_BUDGET.
     Always False when the budget is unlimited (0)."""
     if config.DAILY_TOKEN_BUDGET <= 0:
         return False
-    return today_tokens() >= int(config.DAILY_TOKEN_BUDGET * 0.8)
+    return billable_tokens() >= int(config.DAILY_TOKEN_BUDGET * 0.8)
 
 
 def remaining_tokens() -> int | None:
-    """Tokens left in today's budget, or None when unlimited."""
+    """Billable tokens left in today's budget, or None when unlimited."""
     if config.DAILY_TOKEN_BUDGET <= 0:
         return None
-    return max(0, config.DAILY_TOKEN_BUDGET - today_tokens())
+    return max(0, config.DAILY_TOKEN_BUDGET - billable_tokens())
 
 
 def add_tokens(usage: dict, cost_usd: float = 0.0) -> None:
@@ -128,10 +143,13 @@ fmt_tokens = _fmt_tokens
 
 
 def summary() -> str:
-    """One-line human status for a Telegram report footer."""
+    """One-line human status. Shows the BILLABLE total (what actually gates)
+    against the cap, with the raw token + cache counts for transparency."""
     d = _load()
-    used = d["input_tokens"] + d["output_tokens"] + d["cache_tokens"]
+    raw = d["input_tokens"] + d["output_tokens"] + d["cache_tokens"]
+    billable = d["input_tokens"] + d["output_tokens"] + int(d["cache_tokens"] * CACHE_TOKEN_WEIGHT)
     cap = config.DAILY_TOKEN_BUDGET
     cap_txt = _fmt_tokens(cap) if cap > 0 else "∞"
-    return (f"🧮 დღეს: {_fmt_tokens(used)}/{cap_txt} tokens · "
+    return (f"🧮 დღეს: {_fmt_tokens(billable)}/{cap_txt} billable "
+            f"(raw {_fmt_tokens(raw)}, cache {_fmt_tokens(d['cache_tokens'])}) · "
             f"~${d['cost_usd']:.2f} · {d['tasks']} task(s)")
