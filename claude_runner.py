@@ -187,7 +187,16 @@ async def run_claude_task(task: str) -> dict:
                         "budget": budget.summary()}
 
             result_text = (parsed.get("result") or "").strip()
-            is_error = bool(parsed.get("is_error")) or proc.returncode != 0
+            # claude's own JSON verdict is authoritative when present. The Windows
+            # `cmd /c` shim can exit nonzero on a clean run (STATUS_CONTROL_C_EXIT,
+            # a sibling leg's `taskkill /T`, child process-group signals), so a
+            # nonzero returncode alone must NOT flip a declared success to failure —
+            # that surfaced as the misleading "claude reported an error (success)".
+            # Only trust the return code when there is no is_error field to read.
+            if "is_error" in parsed:
+                is_error = bool(parsed.get("is_error"))
+            else:
+                is_error = proc.returncode != 0
             if is_error:
                 subtype = parsed.get("subtype") or parsed.get("stop_reason") or f"exit {proc.returncode}"
                 return {"ok": False, "output": result_text,

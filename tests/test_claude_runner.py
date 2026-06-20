@@ -31,7 +31,7 @@ class TestClaudeRunnerUnit(unittest.TestCase):
             "bot.py",
             "requirements.txt",
             "README.md",
-            "agent_orchestrator.py",
+            "agents.py",
             "tests/test_claude_runner.py",
         ]
 

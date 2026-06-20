@@ -15,7 +15,7 @@ it reviews. This script reuses the telegram bot's hardened workers rather than
 re-implementing them:
 
   * claude_runner.run_claude_task   - Claude edits files (budget + killswitch guarded)
-  * agent_orchestrator.query_gemini - Gemini review (budget + killswitch guarded)
+  * agents.ask_gemini             - Gemini review (budget + killswitch guarded)
   * claude_runner.auto_commit_push  - secret-scanned commit + push on approval
 
 State lives in shared/ as plain files so the human (and either agent) can read
@@ -42,7 +42,7 @@ from pathlib import Path
 
 import config
 import claude_runner
-import agent_orchestrator
+import agents
 
 # The Windows console defaults to cp1252, which can't encode the status emoji
 # below; force utf-8 so prints never crash the loop. No-op if already utf-8 or
@@ -264,18 +264,34 @@ def _coder_prompt(task: str, last_review: str, round_no: int) -> str:
         ]
     parts += [
         "",
-        "Make the changes now. End with a 3-5 line summary of what you changed and why.",
+        "Make any needed changes now. Then end with a 3-5 line summary describing the",
+        "CUMULATIVE state of your FULL change set since the last commit — i.e. what the",
+        "whole diff achieves and why it satisfies the task — NOT only what you touched",
+        "this round. The reviewer sees the cumulative `git diff HEAD` (all rounds), so a",
+        "round where you change nothing must still summarize what the existing diff does,",
+        "never 'changed nothing' — that reads as contradicting a non-empty diff.",
     ]
     return "\n".join(parts)
 
 
-def _reviewer_prompt(task: str, changed_files: str, diff: str, round_no: int) -> str:
+# The reviewer's persona lives in the system prompt so the user prompt is pure
+# evidence. Critically it runs through query_gemini_plain (NO file tools): the
+# tool-carrying _call_gemini path crashes when the model hallucinates a call to an
+# unregistered tool like `run_code` (google-genai does an unguarded
+# function_map[name] lookup → KeyError), and the reviewer is supposed to be
+# filesystem-blind anyway — it reviews ONLY from the diff.
+REVIEWER_SYSTEM_PROMPT = (
+    "You are Gemini, the adversarial REVIEWER in a Claude<->Gemini code loop. "
+    "You have NO filesystem access and CANNOT run code — review ONLY from the git "
+    "diff and the coder's summary you are given. Do not attempt to call tools. "
+    "Be adversarial: find real defects; approving broken code to be agreeable is a "
+    "failure of your role."
+)
+
+
+def _reviewer_prompt(task: str, changed_files: str, diff: str,
+                     coder_summary: str, round_no: int) -> str:
     return "\n".join([
-        "You are the REVIEWER in an adversarial Claude<->Gemini loop. You are Gemini.",
-        "You CANNOT read the filesystem — review ONLY from the diff below.",
-        "Be adversarial: your job is to find real problems, not to be agreeable.",
-        "Politeness that approves broken code is a failure of your role.",
-        "",
         "Your reply MUST begin with exactly one of these two lines:",
         "  VERDICT: CHANGES_REQUESTED",
         "  VERDICT: APPROVED",
@@ -286,10 +302,18 @@ def _reviewer_prompt(task: str, changed_files: str, diff: str, round_no: int) ->
         "## TASK (what the code must achieve)",
         task.strip(),
         "",
+        "## CODER'S OWN SUMMARY (their CLAIM — verify it against the diff; do not",
+        "take it on faith, but do NOT accuse them of skipping work the summary shows)",
+        coder_summary.strip() or "(the coder produced no summary)",
+        "",
         f"## CHANGED FILES (round {round_no})",
         changed_files or "(none — the coder changed no files, which is itself a problem)",
         "",
-        "## DIFF (git diff HEAD)",
+        "## DIFF (git diff HEAD) — CUMULATIVE since the last commit, across ALL rounds.",
+        "The summary above describes this whole change set. A non-empty diff plus a",
+        "summary that says 'no further change this round' is NOT a contradiction: the",
+        "diff is the running total, not just the latest round. Review the diff as the",
+        "complete body of work against the TASK.",
         "```diff",
         diff,
         "```",
@@ -345,8 +369,8 @@ async def main() -> int:
             f"them on purpose.\n   WORKSPACE_DIR = {config.WORKSPACE_DIR}")
         return 1
 
-    agent_orchestrator.init_clients()
-    if not agent_orchestrator.gemini_client:
+    agents.init_gemini()
+    if not agents.gemini_client:
         print("⛔ Gemini client failed to init — check GEMINI_API_KEYS in .env.")
         return 1
 
@@ -387,8 +411,15 @@ async def main() -> int:
         state["turn"] = "reviewer"
         _save_state(state)
         print(f"\n=== Round {rnd}: REVIEWER (Gemini) ===")
-        review = (await agent_orchestrator.query_gemini(
-            _reviewer_prompt(task, changed_files, diff, rnd))).strip()
+        # query_gemini_plain (no file tools) — see REVIEWER_SYSTEM_PROMPT. Passing
+        # coder_out lets the reviewer see what the coder claims it did (e.g. "ran
+        # the script") instead of falsely accusing it of skipping work it can't see.
+        review = (await agents.ask_gemini(
+            _reviewer_prompt(task, changed_files, diff, coder_out, rnd),
+            REVIEWER_SYSTEM_PROMPT,
+            temperature=0.3,
+            max_tokens=4096,
+        )).strip()
         _write(REVIEW_FILE, f"# Round {rnd} — Reviewer (Gemini)\n_{_now()}_\n\n{review}\n")
         verdict = _verdict(review)
         print(review[:600])
