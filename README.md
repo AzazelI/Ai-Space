@@ -1,5 +1,7 @@
 # Council Room
 
+**In English:** a local desktop app (Python, tkinter) where I work with two AI models in one shared transcript: Claude as lead engineer, through the `claude` CLI, and Gemini as architect-reviewer. It has four modes. **Discuss** is a three-way conversation. **Council** has both models take independent positions, rebut each other and agree on a written plan. **Build** is a loop in which Claude writes the code and Gemini reviews each diff in rounds. **Push** commits the result. Because the agents spend money and act on the machine, the guardrails are part of the design: a daily token budget that is checked before every task, a per-task cost ceiling, and a sticky kill switch that freezes every paid or machine-changing action until a person lifts it. 34 automated tests. The rest of this README is in Georgian.
+
 ლოკალური „საბჭოს ოთახი" — შენ, **Claude** (Lead Engineer) და **Antigravity / Gemini**
 (Master Architect) ერთ ჩატში, ერთ ტრანსკრიპტში. ერთად განიხილავთ, იწვევთ საბჭოს,
 აშენებთ პროექტს და push-ავთ.
