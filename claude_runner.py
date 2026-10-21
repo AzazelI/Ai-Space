@@ -12,6 +12,7 @@ import shutil
 import asyncio
 import logging
 import subprocess
+import time
 import config
 import budget
 import killswitch
@@ -314,12 +315,18 @@ async def auto_commit_push(message: str) -> dict:
             await _run_git(["reset"])  # unstage everything; let the owner review
             return {"ok": False, "summary": f"⛔ Push aborted — secret-looking files were staged: {', '.join(flagged[:5])}. Unstaged for your review."}
 
+    # Create ephemeral branch:
+    branch = f"council/auto-{int(time.time())}"
+    code, err_msg = await _run_git(["checkout", "-b", branch])
+    if code != 0:
+        return {"ok": False, "summary": f"git checkout branch failed: {err_msg}"}
+
     code, out = await _run_git(["commit", "-m", message])
     if code != 0:
         return {"ok": False, "summary": f"git commit failed: {out}"}
 
-    code, out = await _run_git(["push"])
+    code, out = await _run_git(["push", "-u", "origin", branch])
     if code != 0:
-        return {"ok": False, "summary": f"Committed locally, but push failed: {out}"}
+        return {"ok": False, "summary": f"Committed locally to {branch}, but push failed: {out}"}
 
-    return {"ok": True, "summary": "Committed and pushed ✅"}
+    return {"ok": True, "summary": f"Committed and pushed to ephemeral branch: {branch} ✅"}

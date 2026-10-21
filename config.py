@@ -44,7 +44,7 @@ AUTO_PUSH = os.getenv("AUTO_PUSH", "false").strip().lower() in ("1", "true", "ye
 #  * MAX_TASK_COST_USD  — per build-task pre-emptive ceiling (claude --max-budget-usd). 0 = off.
 #  * DAILY_TOKEN_BUDGET — cumulative daily token ledger (budget.py). 0 = off.
 MAX_TASK_COST_USD = float(os.getenv("MAX_TASK_COST_USD", "2.0"))
-DAILY_TOKEN_BUDGET = int(os.getenv("DAILY_TOKEN_BUDGET", "2000000"))
+DAILY_TOKEN_BUDGET = int(os.getenv("DAILY_TOKEN_BUDGET", "10000000"))
 
 
 def is_configured() -> tuple[bool, list[str]]:

@@ -186,6 +186,34 @@ class TestClaudeRunnerIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(res["ok"])
             self.assertIn("დღიური ტოკენ-ბიუჯეტი ამოწურულია", res["error"])
 
+    @patch("claude_runner._run_git")
+    @patch("time.time", return_value=1234567890)
+    async def test_auto_commit_push_ephemeral_branch(self, mock_time, mock_run_git):
+        """Tests that auto_commit_push creates an ephemeral branch, commits, and pushes to origin branch without --force."""
+        mock_run_git.side_effect = [
+            (0, " M bot.py"),  # git status --porcelain
+            (0, ""),          # git add -A
+            (0, "bot.py"),    # git diff --cached --name-only
+            (0, ""),          # git checkout -b council/auto-1234567890
+            (0, ""),          # git commit -m "test message"
+            (0, ""),          # git push -u origin council/auto-1234567890
+        ]
+
+        res = await claude_runner.auto_commit_push("test message")
+
+        self.assertTrue(res["ok"])
+        self.assertIn("council/auto-1234567890", res["summary"])
+
+        # Check checkout was called with ephemeral branch name
+        checkout_call = mock_run_git.call_args_list[3][0][0]
+        self.assertEqual(checkout_call, ["checkout", "-b", "council/auto-1234567890"])
+
+        # Check push was called with origin and ephemeral branch, without force
+        push_call = mock_run_git.call_args_list[5][0][0]
+        self.assertEqual(push_call, ["push", "-u", "origin", "council/auto-1234567890"])
+        self.assertNotIn("--force", push_call)
+        self.assertNotIn("--force-with-lease", push_call)
+
 
 if __name__ == "__main__":
     unittest.main()
